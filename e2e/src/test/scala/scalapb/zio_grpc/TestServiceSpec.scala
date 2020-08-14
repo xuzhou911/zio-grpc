@@ -20,8 +20,8 @@ import scalapb.zio_grpc.testservice.ZioTestservice.TestServiceClient
 import TestUtils._
 
 object TestServiceSpec extends DefaultRunnableSpec {
-  val serverLayer: ZLayer[TestServiceImpl, Nothing, Server] =
-    Server.live[TestServiceImpl.Service](ServerBuilder.forPort(0))
+  val serverLayer: ZLayer[TestServiceImpl, Throwable, Server] =
+    ServerLayer.access[TestServiceImpl.Service](ServerBuilder.forPort(0))
 
   val clientLayer: ZLayer[Server, Nothing, TestServiceClient] =
     ZLayer.fromServiceManaged { ss: Server.Service =>
@@ -193,7 +193,7 @@ object TestServiceSpec extends DefaultRunnableSpec {
                        )
                      )
                      .fork
-          _     <- TestServiceImpl.awaitReceived
+          _     <- TestServiceImpl.awaitDelayReceived
           _     <- fiber.interrupt
           exit  <- TestServiceImpl.awaitExit
         } yield exit.interrupted)(isTrue)
@@ -215,24 +215,24 @@ object TestServiceSpec extends DefaultRunnableSpec {
 
   case class BidiFixture[Req, Res](
       in: Queue[Res],
-      out: Queue[Req],
+      out: Queue[Option[Req]],
       fiber: Fiber[Status, Unit]
   ) {
-    def send(r: Req) = out.offer(r)
+    def send(r: Req) = out.offer(Some(r))
 
     def receive(n: Int) = ZIO.collectAll(ZIO.replicate(n)(in.take))
 
-    def halfClose = out.shutdown
+    def halfClose = out.offer(None)
   }
 
   object BidiFixture {
     def apply[R, Req, Res](
         call: Stream[Status, Req] => ZStream[R, Status, Res]
-    ): zio.URIO[R, BidiFixture[Req, Res]] =
+    ): zio.URIO[R with zio.console.Console, BidiFixture[Req, Res]] =
       for {
         in    <- ZQueue.unbounded[Res]
-        out   <- ZQueue.unbounded[Req]
-        fiber <- call(Stream.fromQueue(out)).foreach(in.offer).fork
+        out   <- ZQueue.unbounded[Option[Req]]
+        fiber <- call(Stream.fromQueue(out).collectWhileSome).foreach(in.offer).fork
       } yield BidiFixture(in, out, fiber)
   }
 
@@ -240,7 +240,7 @@ object TestServiceSpec extends DefaultRunnableSpec {
     suite("bidi streaming request")(
       testM("returns successful response") {
         assertM(for {
-          bf   <- BidiFixture(TestServiceClient.bidiStreaming)
+          bf   <- BidiFixture(TestServiceClient.bidiStreaming[Any])
           _    <- bf.send(Request(Scenario.OK, in = 1))
           f1   <- bf.receive(1)
           _    <- bf.send(Request(Scenario.OK, in = 3))
@@ -262,7 +262,7 @@ object TestServiceSpec extends DefaultRunnableSpec {
       },
       testM("returns correct error response") {
         assertM(for {
-          bf <- BidiFixture(TestServiceClient.bidiStreaming)
+          bf <- BidiFixture(TestServiceClient.bidiStreaming[Any])
           _  <- bf.send(Request(Scenario.OK, in = 1))
           f1 <- bf.receive(1)
           _  <- bf.send(Request(Scenario.ERROR_NOW, in = 3))
@@ -271,7 +271,7 @@ object TestServiceSpec extends DefaultRunnableSpec {
         } yield (f1, j))(
           tuple(
             equalTo(List(Response("1"))),
-            fails(hasStatusCode(Status.INTERNAL))
+            fails(hasDescription("Intentional error") && hasStatusCode(Status.INTERNAL))
           )
         )
       },
@@ -280,7 +280,7 @@ object TestServiceSpec extends DefaultRunnableSpec {
           for {
             testServiceImpl <- ZIO.environment[TestServiceImpl]
             collectFiber    <- collectWithError(
-                                 TestServiceClient.bidiStreaming(
+                                 TestServiceClient.bidiStreaming[Any](
                                    Stream(
                                      Request(Scenario.OK, in = 17)
                                    ) ++ Stream.fromEffect(testServiceImpl.get.awaitReceived).drain
@@ -320,5 +320,5 @@ object TestServiceSpec extends DefaultRunnableSpec {
       serverStreamingSuite,
       clientStreamingSuite,
       bidiStreamingSuite
-    ).provideLayer(layers)
+    ).provideCustomLayer(layers.orDie)
 }

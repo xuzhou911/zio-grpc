@@ -1,35 +1,33 @@
 package scalapb.zio_grpc
 
-import zio.{Has, Tag}
+import zio.{Has, Tag, ZIO, ZLayer, ZManaged}
 import io.grpc.ServerServiceDefinition
-import io.grpc.ServerBuilder
-import zio.ZLayer
-import zio.ZManaged
-import zio.ZIO
 
 /** Represents a managed list of services to be added to the a server.
   *
- * This is just a wrapper around a list of ServerServiceDefinition.
+  * This is just a wrapper around a list of ServerServiceDefinition.
   */
 sealed class ServiceList[-RR] private[scalapb] (val bindAll: ZManaged[RR, Throwable, List[ServerServiceDefinition]]) {
 
   /** Adds a service to the service list */
-  def add[R1, S1](s1: S1)(implicit
-      bs: ZBindableService[R1, S1]
-  ): ServiceList[RR with R1] = addManaged[R1, S1](ZManaged.succeed(s1))
+  def add[R1 <: RR, S1](s1: S1)(implicit b: ZBindableService[R1, S1]): ServiceList[R1] =
+    addManaged[R1, RR, S1](ZManaged.succeed(s1))
 
-  def addM[R1, S1](in: ZIO[R1, Throwable, S1])(implicit bs: ZBindableService[R1, S1]): ServiceList[RR with R1] =
-    addManaged(in.toManaged_)
+  /** Adds an effect that returns a service to the service list */
+  def addM[R1 <: RR, R2 <: RR, S1](
+      s1: ZIO[R2, Throwable, S1]
+  )(implicit b: ZBindableService[R1, S1]): ServiceList[R1 with R2] =
+    addManaged[R1, R2, S1](s1.toManaged_)
 
-  def addManaged[R1, S1](s1: ZManaged[R1, Throwable, S1])(implicit
+  def addManaged[R1 <: RR, R2 <: RR, S1](s1: ZManaged[R1 with R2, Throwable, S1])(implicit
       bs: ZBindableService[R1, S1]
-  ): ServiceList[RR with R1] =
+  ): ServiceList[RR with R1 with R2] =
     new ServiceList(for {
       l  <- bindAll
       sd <- s1.mapM(bs.bindService(_))
     } yield sd :: l)
 
-  /** Adds a dependency on a service that will be provided later from the environment or a Layer **/
+  /** Adds a dependency on a service that will be provided later from the environment or a Layer * */
   def access[B: Tag](implicit bs: ZBindableService[Any, B]): ServiceList[Has[B] with RR] =
     accessEnv[Any, B]
 
@@ -39,6 +37,9 @@ sealed class ServiceList[-RR] private[scalapb] (val bindAll: ZManaged[RR, Throwa
     })
 
   def provide(r: RR): ServiceList[Any] = new ServiceList[Any](bindAll.provide(r))
+
+  def provideLayer[R1 <: RR](layer: ZLayer[Any, Throwable, R1]): ServiceList[Any] =
+    new ServiceList[Any](bindAll.provideLayer(layer))
 }
 
 object ServiceList extends ServiceList(ZManaged.succeed(Nil)) {

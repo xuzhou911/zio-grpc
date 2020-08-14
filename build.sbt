@@ -1,10 +1,10 @@
 import Settings.stdSettings
 
-val grpcVersion = "1.30.1"
+val grpcVersion = "1.31.1"
 
-val Scala213 = "2.13.2"
+val Scala213 = "2.13.3"
 
-val Scala212 = "2.12.10"
+val Scala212 = "2.12.11"
 
 ThisBuild / resolvers += Resolver.sonatypeRepo("snapshots")
 
@@ -32,7 +32,7 @@ inThisBuild(
   )
 )
 
-val zioVersion = "1.0.0-RC21-2"
+val zioVersion = "1.0.0"
 
 lazy val core = crossProject(JSPlatform, JVMPlatform)
   .in(file("core"))
@@ -105,3 +105,31 @@ lazy val e2e = project
     codeGenClasspath := (codeGen / Compile / fullClasspath).value,
     testFrameworks += new TestFramework("zio.test.sbt.ZTestFramework")
   )
+
+lazy val docs = project
+  .enablePlugins(LocalCodeGenPlugin)
+  .in(file("zio-grpc-docs"))
+  .dependsOn(core.jvm)
+  .settings(
+    crossScalaVersions := Seq(Scala212),
+    skip in publish := true,
+    moduleName := "zio-grpc-docs",
+    mdocVariables := Map(
+      "sbtProtocVersion" -> "0.99.34",
+      "grpcVersion"      -> "1.31.1",
+      "zioGrpcVersion"   -> "0.4.0",
+      "scalapbVersion"   -> scalapb.compiler.Version.scalapbVersion
+    ),
+    libraryDependencies ++= Seq(
+      "io.grpc"               % "grpc-netty"           % grpcVersion,
+      "com.thesamet.scalapb" %% "scalapb-runtime-grpc" % scalapb.compiler.Version.scalapbVersion
+    ),
+    PB.targets in Compile := Seq(
+      scalapb.gen(grpc = true) -> (sourceManaged in Compile).value,
+      genModule(
+        "scalapb.zio_grpc.ZioCodeGenerator$"
+      )                        -> (sourceManaged in Compile).value
+    ),
+    codeGenClasspath := (codeGen / Compile / fullClasspath).value
+  )
+  .enablePlugins(MdocPlugin, DocusaurusPlugin)

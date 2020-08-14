@@ -23,6 +23,7 @@ package object server {
 
     class Service(
         requestReceived: zio.Promise[Nothing, Unit],
+        delayReceived: zio.Promise[Nothing, Unit],
         exit: zio.Promise[Nothing, Exit[Status, Response]]
     )(clock: Clock.Service, console: Console.Service)
         extends testservice.ZioTestservice.TestService {
@@ -76,24 +77,25 @@ package object server {
       def clientStreaming(
           request: Stream[Status, Request]
       ): ZIO[Any, Status, Response] =
-        requestReceived.succeed(()) *> request
-          .foldM(0)((state, req) =>
-            req.scenario match {
-              case Scenario.OK        => ZIO.succeed(state + req.in)
-              case Scenario.DELAY     => ZIO.never
-              case Scenario.DIE       => ZIO.die(new RuntimeException("foo"))
-              case Scenario.ERROR_NOW =>
-                ZIO.fail((Status.INTERNAL.withDescription("InternalError")))
-              case _: Scenario        => ZIO.fail(Status.UNKNOWN)
-            }
-          )
-          .map(r => Response(r.toString))
-          .onExit(exit.succeed(_))
+        requestReceived.succeed(()) *>
+          request
+            .foldM(0)((state, req) =>
+              req.scenario match {
+                case Scenario.OK        => ZIO.succeed(state + req.in)
+                case Scenario.DELAY     => delayReceived.succeed(()) *> ZIO.never
+                case Scenario.DIE       => ZIO.die(new RuntimeException("foo"))
+                case Scenario.ERROR_NOW =>
+                  ZIO.fail((Status.INTERNAL.withDescription("InternalError")))
+                case _: Scenario        => ZIO.fail(Status.UNKNOWN)
+              }
+            )
+            .map(r => Response(r.toString))
+            .onExit(exit.succeed(_))
 
       def bidiStreaming(
           request: Stream[Status, Request]
       ): Stream[Status, Response] =
-        (ZStream.fromEffect(requestReceived.succeed(())).drain ++
+        ((ZStream.fromEffect(requestReceived.succeed(())).drain ++
           (request.flatMap { r =>
             r.scenario match {
               case Scenario.OK        =>
@@ -102,13 +104,17 @@ package object server {
               case Scenario.DELAY     => Stream.never
               case Scenario.DIE       => Stream.die(new RuntimeException("FOO"))
               case Scenario.ERROR_NOW =>
-                Stream.fail(Status.INTERNAL.withDescription("InternalError"))
-              case _                  => Stream.fail(Status.UNKNOWN)
+                // Stream.fromEffect(zio.console.putStrLn("*** Got error now!")).drain ++
+                Stream.fail(Status.INTERNAL.withDescription("Intentional error"))
+              case _                  => Stream.fail(Status.INVALID_ARGUMENT.withDescription(s"Got request: ${r.toProtoString}"))
             }
           } ++ Stream(Response("DONE"))))
-          .ensuring(exit.succeed(Exit.succeed(Response())))
+          .ensuring(exit.succeed(Exit.succeed(Response()))))
+          .provide(Has(clock) ++ Has(console))
 
       def awaitReceived = requestReceived.await
+
+      def awaitDelayReceived = requestReceived.await
 
       def awaitExit = exit.await
     }
@@ -119,8 +125,9 @@ package object server {
     ): zio.IO[Nothing, TestServiceImpl.Service] =
       for {
         p1 <- Promise.make[Nothing, Unit]
-        p2 <- Promise.make[Nothing, Exit[Status, Response]]
-      } yield new Service(p1, p2)(clock, console)
+        p2 <- Promise.make[Nothing, Unit]
+        p3 <- Promise.make[Nothing, Exit[Status, Response]]
+      } yield new Service(p1, p2, p3)(clock, console)
 
     val live: ZLayer[Clock with Console, Nothing, TestServiceImpl] =
       ZLayer.fromServicesM[
@@ -137,6 +144,9 @@ package object server {
 
     def awaitReceived: ZIO[TestServiceImpl, Nothing, Unit] =
       ZIO.accessM(_.get.awaitReceived)
+
+    def awaitDelayReceived: ZIO[TestServiceImpl, Nothing, Unit] =
+      ZIO.accessM(_.get.awaitDelayReceived)
 
     def awaitExit: ZIO[TestServiceImpl, Nothing, Exit[Status, Response]] =
       ZIO.accessM(_.get.awaitExit)

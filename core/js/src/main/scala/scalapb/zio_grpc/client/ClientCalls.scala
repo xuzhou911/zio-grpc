@@ -4,7 +4,6 @@ import zio.IO
 import zio.stream.Stream
 import scalapb.zio_grpc.SafeMetadata
 import scalapb.zio_grpc.ZChannel
-import scalapb.zio_grpc.GStream
 import io.grpc.MethodDescriptor
 import io.grpc.CallOptions
 import scalapb.grpcweb.native.ErrorInfo
@@ -81,28 +80,28 @@ object ClientCalls {
     } yield (queue, rpc))
 
     Stream.fromEffect(e).flatMap {
-      case (queue, rpc) =>
+      case (queue, rpc @ _) =>
         Stream
           .fromQueueWithShutdown(queue)
           .collectWhileSuccess
     }
   }
 
-  def clientStreamingCall[R, Req, Res](
+  def clientStreamingCall[R, R0, Req, Res](
       channel: ZChannel[R],
       method: MethodDescriptor[Req, Res],
       options: CallOptions,
       headers: SafeMetadata,
-      req: GStream[Req]
-  ): ZIO[R, Status, Res] =
+      req: ZStream[R0, Status, Req]
+  ): ZIO[R with R0, Status, Res] =
     IO.fail(Status.INTERNAL.withDescription("Not supported"))
 
-  def bidiCall[R, Req, Res](
+  def bidiCall[R, R0, Req, Res](
       channel: ZChannel[R],
       method: MethodDescriptor[Req, Res],
       options: CallOptions,
       headers: SafeMetadata,
-      req: GStream[Req]
-  ): ZStream[R, Status, Res] =
+      req: ZStream[R0, Status, Req]
+  ): ZStream[R with R0, Status, Res] =
     Stream.fail(Status.INTERNAL.withDescription("Not supported"))
 }
